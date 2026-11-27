@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from "react";
+import React, { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import {
   Sun,
   Moon,
@@ -18,9 +18,20 @@ import {
 } from "lucide-react";
 import Piano from "./Piano";
 import ControlKnob from "./ControlKnob";
+import RecordingPanel, { type RecordingStatusMessage } from "./RecordingPanel";
 import { PianoSynthesizer, type PianoNoteNodes } from "./PianoSynthesizer";
 import { Button } from "./ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "./ui/card";
+import { StudioAudioRecorder } from "../lib/audioRecorder";
+import {
+  clearAllRecordings,
+  deleteRecording,
+  isIndexedDBSupported,
+  listValidRecordings,
+  saveRecording,
+  type StoredRecording,
+} from "../lib/recordingStorage";
+import type { EncodedWavResult } from "../lib/wavEncoder";
 
 interface AudioSettings {
   volume: number;
@@ -70,6 +81,14 @@ const MidiController: React.FC = () => {
   const [midiDeviceName, setMidiDeviceName] = useState<string | null>(null);
   const [midiActiveNotes, setMidiActiveNotes] = useState<Set<string>>(new Set());
 
+  // Local .WAV audio recording state (IndexedDB + strict 30-min expiration)
+  const [storageSupported] = useState<boolean>(() => isIndexedDBSupported());
+  const [recordingEnabled, setRecordingEnabled] = useState(false);
+  const [hasCapturedAudio, setHasCapturedAudio] = useState(false);
+  const [recordingElapsed, setRecordingElapsed] = useState(0);
+  const [recordings, setRecordings] = useState<StoredRecording[]>([]);
+  const [recordingStatus, setRecordingStatus] = useState<RecordingStatusMessage | null>(null);
+
   const [audioSettings, setAudioSettings] = useState<AudioSettings>(DEFAULT_SETTINGS);
 
   // Refs for real-time audio graph without stale closures
@@ -78,7 +97,10 @@ const MidiController: React.FC = () => {
   const filterRef = useRef<BiquadFilterNode | null>(null);
   const dryGainRef = useRef<GainNode | null>(null);
   const wetGainRef = useRef<GainNode | null>(null);
+  const compressorRef = useRef<DynamicsCompressorNode | null>(null);
   const pianoSynthRef = useRef<PianoSynthesizer | null>(null);
+  const recorderRef = useRef<StudioAudioRecorder | null>(null);
+  const statusTimerRef = useRef<number | null>(null);
 
   const activeOscillatorsRef = useRef<Map<string, { osc: OscillatorNode; gain: GainNode }>>(
     new Map(),
@@ -190,7 +212,13 @@ const MidiController: React.FC = () => {
       filterRef.current = filter;
       dryGainRef.current = dryGain;
       wetGainRef.current = wetGain;
+      compressorRef.current = compressor;
       pianoSynthRef.current = new PianoSynthesizer(ctx, masterGain);
+
+      if (!recorderRef.current) {
+        recorderRef.current = new StudioAudioRecorder();
+      }
+      void recorderRef.current.attach(ctx, compressor);
 
       if (ctx.state === "suspended") {
         ctx
@@ -344,15 +372,255 @@ const MidiController: React.FC = () => {
     }
   }, [sustainOn, releaseSingleNote]);
 
-  // Cleanup AudioContext on unmount
+  // Cleanup AudioContext & Recorder on unmount
   useEffect(() => {
     return () => {
+      if (statusTimerRef.current) {
+        window.clearTimeout(statusTimerRef.current);
+      }
+      recorderRef.current?.dispose();
+      recorderRef.current = null;
       stopAllNotes(true);
       if (audioContextRef.current && audioContextRef.current.state !== "closed") {
         audioContextRef.current.close().catch(() => {});
       }
     };
   }, [stopAllNotes]);
+
+  const showRecordingStatus = useCallback(
+    (type: RecordingStatusMessage["type"], text: string, autoClearMs = 6000) => {
+      if (statusTimerRef.current) {
+        window.clearTimeout(statusTimerRef.current);
+        statusTimerRef.current = null;
+      }
+      setRecordingStatus({ type, text });
+      if (autoClearMs > 0) {
+        statusTimerRef.current = window.setTimeout(() => {
+          setRecordingStatus(null);
+          statusTimerRef.current = null;
+        }, autoClearMs);
+      }
+    },
+    [],
+  );
+
+  // Synchronize local IndexedDB recordings and purge any recordings older than 30 minutes
+  const refreshValidRecordings = useCallback(
+    async (notifyIfPurged = false) => {
+      if (!storageSupported) return;
+      try {
+        const { recordings: valid, purgedCount } = await listValidRecordings();
+        setRecordings(valid);
+        if (notifyIfPurged && purgedCount > 0) {
+          showRecordingStatus(
+            "info",
+            `Automatically deleted ${purgedCount} expired recording${purgedCount > 1 ? "s" : ""} (30-minute limit reached).`,
+          );
+        }
+      } catch {
+        showRecordingStatus(
+          "error",
+          "Could not access browser local storage (IndexedDB). Check private-browsing storage settings.",
+          0,
+        );
+      }
+    },
+    [storageSupported, showRecordingStatus],
+  );
+
+  const persistEncodedWav = useCallback(
+    async (wav: EncodedWavResult | null, reason: "manual" | "toggle-off" | "auto-split") => {
+      if (!wav || wav.peakAmplitude <= 0.0004 || wav.durationSec < 0.05) {
+        if (reason === "toggle-off") {
+          showRecordingStatus(
+            "info",
+            "Recording disabled — no audio was played while recording was enabled.",
+          );
+        } else if (reason === "manual") {
+          showRecordingStatus("info", "Play piano or synth keys first before saving a .WAV take.");
+        }
+        return;
+      }
+
+      try {
+        await saveRecording({
+          mode: soundModeRef.current,
+          blob: wav.blob,
+          durationSec: wav.durationSec,
+          sampleRate: wav.sampleRate,
+          sizeBytes: wav.sizeBytes,
+        });
+        await refreshValidRecordings(false);
+        const prefix =
+          reason === "auto-split"
+            ? "Auto-saved 5-minute .WAV segment"
+            : "Saved genuine .WAV recording";
+        showRecordingStatus("success", `${prefix} locally in your browser (valid for 30 minutes).`);
+      } catch {
+        showRecordingStatus(
+          "error",
+          "Failed to save .WAV recording to local browser storage (storage quota may be full).",
+          8000,
+        );
+      }
+    },
+    [refreshValidRecordings, showRecordingStatus],
+  );
+
+  // Wire recorder callbacks (auto-split & live signal indicator)
+  useEffect(() => {
+    if (!recorderRef.current) {
+      recorderRef.current = new StudioAudioRecorder();
+    }
+    recorderRef.current.setCallbacks({
+      onSignalDetected: () => setHasCapturedAudio(true),
+      onAutoSplit: (wav) => {
+        setHasCapturedAudio(false);
+        setRecordingElapsed(0);
+        void persistEncodedWav(wav, "auto-split");
+      },
+    });
+  }, [persistEncodedWav]);
+
+  // Startup, browser-refresh, tab-focus, and periodic 30-minute automatic expiry enforcement
+  useEffect(() => {
+    if (!storageSupported) return;
+
+    void refreshValidRecordings(false);
+
+    const handleVisibilityOrFocus = () => {
+      if (document.visibilityState === "visible") {
+        void refreshValidRecordings(true);
+      }
+    };
+
+    const backupInterval = window.setInterval(() => {
+      void refreshValidRecordings(true);
+    }, 30_000);
+
+    document.addEventListener("visibilitychange", handleVisibilityOrFocus);
+    window.addEventListener("focus", handleVisibilityOrFocus);
+
+    return () => {
+      window.clearInterval(backupInterval);
+      document.removeEventListener("visibilitychange", handleVisibilityOrFocus);
+      window.removeEventListener("focus", handleVisibilityOrFocus);
+    };
+  }, [storageSupported, refreshValidRecordings]);
+
+  // Exact timer scheduled for the earliest expiring recording so deletion happens right at 30 minutes
+  useEffect(() => {
+    if (recordings.length === 0) return;
+    const earliestExpiry = recordings.reduce(
+      (min, rec) => (rec.expiresAt < min ? rec.expiresAt : min),
+      recordings[0].expiresAt,
+    );
+    const delayMs = Math.max(150, earliestExpiry - Date.now() + 150);
+    const timeoutId = window.setTimeout(() => {
+      void refreshValidRecordings(true);
+    }, delayMs);
+    return () => window.clearTimeout(timeoutId);
+  }, [recordings, refreshValidRecordings]);
+
+  // Live capture elapsed timer while recording is enabled
+  useEffect(() => {
+    if (!recordingEnabled) {
+      setHasCapturedAudio(false);
+      setRecordingElapsed(0);
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      const rec = recorderRef.current;
+      if (!rec || !rec.active) return;
+      if (rec.hasAudioSignal) {
+        setHasCapturedAudio(true);
+        setRecordingElapsed(rec.elapsedSeconds);
+      }
+    }, 250);
+
+    return () => window.clearInterval(intervalId);
+  }, [recordingEnabled]);
+
+  const handleToggleRecording = useCallback(async () => {
+    if (!storageSupported) {
+      showRecordingStatus(
+        "error",
+        "IndexedDB local storage is unavailable in this browser session.",
+        0,
+      );
+      return;
+    }
+
+    if (recordingEnabled) {
+      setRecordingEnabled(false);
+      setHasCapturedAudio(false);
+      setRecordingElapsed(0);
+      const wav = recorderRef.current?.stopAndEncode() ?? null;
+      await persistEncodedWav(wav, "toggle-off");
+      return;
+    }
+
+    const ctx = ensureAudioGraph();
+    const compressor = compressorRef.current;
+    if (!ctx || !compressor) {
+      showRecordingStatus("error", "Audio engine could not be initialized for recording.", 6000);
+      return;
+    }
+
+    if (!recorderRef.current) {
+      recorderRef.current = new StudioAudioRecorder();
+    }
+    recorderRef.current.setCallbacks({
+      onSignalDetected: () => setHasCapturedAudio(true),
+      onAutoSplit: (wav) => {
+        setHasCapturedAudio(false);
+        setRecordingElapsed(0);
+        void persistEncodedWav(wav, "auto-split");
+      },
+    });
+
+    await recorderRef.current.attach(ctx, compressor);
+    recorderRef.current.start();
+    setHasCapturedAudio(false);
+    setRecordingElapsed(0);
+    setRecordingEnabled(true);
+    showRecordingStatus(
+      "info",
+      "Recording enabled — play piano or synthesizer keys to capture genuine .WAV audio locally.",
+    );
+  }, [storageSupported, recordingEnabled, ensureAudioGraph, persistEncodedWav, showRecordingStatus]);
+
+  const handleSaveTakeNow = useCallback(async () => {
+    if (!recordingEnabled || !recorderRef.current) return;
+    const wav = recorderRef.current.saveTakeAndContinue();
+    setHasCapturedAudio(false);
+    setRecordingElapsed(0);
+    await persistEncodedWav(wav, "manual");
+  }, [recordingEnabled, persistEncodedWav]);
+
+  const handleDeleteRecording = useCallback(
+    async (id: string) => {
+      try {
+        await deleteRecording(id);
+        await refreshValidRecordings(false);
+        showRecordingStatus("info", "Deleted recording from local browser storage.", 4000);
+      } catch {
+        showRecordingStatus("error", "Failed to delete recording.", 5000);
+      }
+    },
+    [refreshValidRecordings, showRecordingStatus],
+  );
+
+  const handleClearAllRecordings = useCallback(async () => {
+    try {
+      await clearAllRecordings();
+      setRecordings([]);
+      showRecordingStatus("info", "Cleared all local recordings from browser storage.", 4000);
+    } catch {
+      showRecordingStatus("error", "Failed to clear local recordings.", 5000);
+    }
+  }, [showRecordingStatus]);
 
   // Optional Web MIDI API auto-detection for physical USB MIDI keyboards
   useEffect(() => {
@@ -448,7 +716,7 @@ const MidiController: React.FC = () => {
     setSustainOn(false);
   };
 
-  const emergencyStop = () => {
+  const emergencyStop = useCallback(() => {
     stopAllNotes(true);
     setSustainOn(false);
     const ctx = audioContextRef.current;
@@ -466,29 +734,57 @@ const MidiController: React.FC = () => {
         }
       }, 90);
     }
-  };
+  }, [stopAllNotes]);
+
+  // Conflict-free centralized mode switcher (Piano <-> Synthesizer) with smooth audio handoff
+  const switchSoundMode = useCallback(
+    (nextMode: SoundMode) => {
+      // No-op when clicking the already active mode so playing/sustained audio is never interrupted
+      if (soundModeRef.current === nextMode) return;
+
+      const prevMode = soundModeRef.current;
+      soundModeRef.current = nextMode;
+      setSoundMode(nextMode);
+
+      // Gently fade out only active voices belonging to the previous engine without clicks or state glitches
+      const prevNotes =
+        prevMode === "piano"
+          ? Array.from(activePianoNotesRef.current.keys())
+          : Array.from(activeOscillatorsRef.current.keys());
+      prevNotes.forEach((n) => releaseSingleNote(n, true));
+    },
+    [releaseSingleNote],
+  );
+
+  const selectWaveform = useCallback(
+    (nextWave: OscillatorType) => {
+      waveformRef.current = nextWave;
+      setWaveform(nextWave);
+      if (soundModeRef.current !== "oscillator") {
+        switchSoundMode("oscillator");
+      }
+    },
+    [switchSoundMode],
+  );
 
   const toggleTheme = () => setTheme((prev) => (prev === "dark" ? "light" : "dark"));
 
-  const keyboardCommands = {
-    onOctaveDown: () => setOctaveOffset((o) => Math.max(-2, o - 1)),
-    onOctaveUp: () => setOctaveOffset((o) => Math.min(2, o + 1)),
-    onToggleSustain: () => setSustainOn((s) => !s),
-    onSelectPiano: () => {
-      stopAllNotes(true);
-      setSoundMode("piano");
-    },
-    onSelectSynth: () => {
-      stopAllNotes(true);
-      setSoundMode("oscillator");
-    },
-    onCycleWaveform: () => {
-      const order: OscillatorType[] = ["sine", "triangle", "sawtooth", "square"];
-      setSoundMode("oscillator");
-      setWaveform((curr) => order[(order.indexOf(curr) + 1) % order.length]);
-    },
-    onStopAll: () => emergencyStop(),
-  };
+  const keyboardCommands = useMemo(
+    () => ({
+      onOctaveDown: () => setOctaveOffset((o) => Math.max(-2, o - 1)),
+      onOctaveUp: () => setOctaveOffset((o) => Math.min(2, o + 1)),
+      onToggleSustain: () => setSustainOn((s) => !s),
+      onSelectPiano: () => switchSoundMode("piano"),
+      onSelectSynth: () => switchSoundMode("oscillator"),
+      onCycleWaveform: () => {
+        const order: OscillatorType[] = ["sine", "triangle", "sawtooth", "square"];
+        const next = order[(order.indexOf(waveformRef.current) + 1) % order.length];
+        selectWaveform(next);
+      },
+      onStopAll: () => emergencyStop(),
+    }),
+    [switchSoundMode, selectWaveform, emergencyStop],
+  );
 
   const lowOct = 4 + octaveOffset;
   const highOct = 5 + octaveOffset;
@@ -522,6 +818,21 @@ const MidiController: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-2.5">
+            {/* Live Recording Header Indicator */}
+            {recordingEnabled && (
+              <a
+                href="#local-audio-recorder"
+                className="studio-panel-in inline-flex items-center gap-1.5 rounded-full border border-red-500/45 bg-red-500/12 px-2.5 py-1.5 text-xs font-bold text-red-700 transition hover:bg-red-500/20 dark:text-red-300"
+                title="Local .WAV recording is active — click to jump to recorder"
+              >
+                <span className="relative flex size-2">
+                  <span className="absolute inline-flex size-full animate-ping rounded-full bg-red-500 opacity-75" />
+                  <span className="relative inline-flex size-2 rounded-full bg-red-600" />
+                </span>
+                <span>REC</span>
+              </a>
+            )}
+
             {/* Live Audio Engine Status Pill */}
             <button
               type="button"
@@ -574,8 +885,11 @@ const MidiController: React.FC = () => {
           className="flex flex-col justify-between gap-3 rounded-2xl border border-border bg-card/90 p-4 shadow-sm sm:flex-row sm:items-center sm:px-5"
         >
           <div className="flex flex-wrap items-center gap-2.5">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-[#dc2626]/12 to-[#f97316]/12 px-3 py-1 text-xs font-semibold text-red-700 ring-1 ring-red-500/25 dark:text-orange-300">
-              <Sparkles className="size-3.5 text-orange-500" />
+            <span
+              key={`${soundMode}-${soundMode === "oscillator" ? waveform : "grand"}`}
+              className="studio-badge-swap inline-flex min-w-[196px] items-center justify-center gap-1.5 rounded-full bg-gradient-to-r from-[#dc2626]/12 to-[#f97316]/12 px-3 py-1 text-xs font-semibold text-red-700 ring-1 ring-red-500/25 dark:text-orange-300"
+            >
+              <Sparkles className="size-3.5 shrink-0 text-orange-500" />
               {soundMode === "piano"
                 ? "Grand Piano Engine"
                 : `Analog Synth · ${waveform.toUpperCase()}`}
@@ -646,34 +960,67 @@ const MidiController: React.FC = () => {
 
             {/* Mode, Sustain & Octave Toolbar */}
             <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
+              <div className="flex flex-wrap items-center gap-2.5">
+                <span
+                  id="sound-mode-label"
+                  className="text-xs font-semibold tracking-wide text-muted-foreground uppercase"
+                >
                   Mode:
                 </span>
-                <Button
-                  type="button"
-                  variant={soundMode === "piano" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => {
-                    stopAllNotes(true);
-                    setSoundMode("piano");
-                  }}
+
+                {/* Animated Sliding Segmented Mode Control (Zero conflict, zero layout jump) */}
+                <div
+                  role="tablist"
+                  aria-labelledby="sound-mode-label"
+                  className="relative grid grid-cols-2 items-center rounded-xl border border-border bg-muted/65 p-1 shadow-2xs"
                 >
-                  <PianoIcon className="size-3.5" />
-                  Piano
-                </Button>
-                <Button
-                  type="button"
-                  variant={soundMode === "oscillator" ? "default" : "outline"}
-                  size="sm"
-                  onClick={() => {
-                    stopAllNotes(true);
-                    setSoundMode("oscillator");
-                  }}
-                >
-                  <AudioWaveform className="size-3.5" />
-                  Synthesizer
-                </Button>
+                  <span
+                    aria-hidden="true"
+                    className={`pointer-events-none absolute top-1 bottom-1 left-1 w-[calc(50%-4px)] rounded-lg bg-gradient-to-r from-[#dc2626] via-[#ea580c] to-[#f97316] shadow-[0_4px_14px_-3px_rgba(234,88,12,0.55)] transition-transform duration-250 ease-[cubic-bezier(0.22,1,0.36,1)] ${
+                      soundMode === "oscillator" ? "translate-x-full" : "translate-x-0"
+                    }`}
+                  />
+
+                  <button
+                    type="button"
+                    role="tab"
+                    id="mode-tab-piano"
+                    aria-selected={soundMode === "piano"}
+                    aria-controls="mode-panel-piano"
+                    onClick={(e) => {
+                      switchSoundMode("piano");
+                      if (e.detail > 0) e.currentTarget.blur();
+                    }}
+                    className={`relative z-10 inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold transition-colors duration-200 select-none cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring sm:text-sm ${
+                      soundMode === "piano"
+                        ? "text-white"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <PianoIcon className="size-3.5 shrink-0" />
+                    <span>Piano</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    role="tab"
+                    id="mode-tab-synthesizer"
+                    aria-selected={soundMode === "oscillator"}
+                    aria-controls="mode-panel-synthesizer"
+                    onClick={(e) => {
+                      switchSoundMode("oscillator");
+                      if (e.detail > 0) e.currentTarget.blur();
+                    }}
+                    className={`relative z-10 inline-flex h-8 items-center justify-center gap-1.5 rounded-lg px-3.5 text-xs font-semibold transition-colors duration-200 select-none cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring sm:text-sm ${
+                      soundMode === "oscillator"
+                        ? "text-white"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <AudioWaveform className="size-3.5 shrink-0" />
+                    <span>Synthesizer</span>
+                  </button>
+                </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -770,33 +1117,65 @@ const MidiController: React.FC = () => {
               </div>
             </div>
 
-            {/* Oscillator Waveforms OR Piano Engine Info */}
-            {soundMode === "oscillator" ? (
-              <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-muted/40 p-3.5">
+            {/* Height-Stabilized Cross-Fade Mode Panel (Zero layout shift between Piano & Synthesizer) */}
+            <div className="grid grid-cols-1 items-stretch">
+              <div
+                id="mode-panel-piano"
+                role="tabpanel"
+                aria-labelledby="mode-tab-piano"
+                aria-hidden={soundMode !== "piano"}
+                className={`studio-mode-panel col-start-1 row-start-1 flex items-center rounded-xl border border-orange-500/25 bg-gradient-to-r from-[#dc2626]/[0.06] via-[#ea580c]/[0.06] to-[#f97316]/[0.06] px-4 py-3 text-xs leading-relaxed text-muted-foreground sm:text-sm ${
+                  soundMode === "piano"
+                    ? "visible translate-y-0 opacity-100 pointer-events-auto"
+                    : "invisible translate-y-1.5 opacity-0 pointer-events-none"
+                }`}
+              >
+                <p>
+                  <strong className="font-semibold text-foreground">Multi-Harmonic Piano:</strong>{" "}
+                  Synthesizes 5 harmonic partials with hammer strike transient, dynamic low-pass
+                  filtering, and real-time stereo concert reverb. Press any key to start playing
+                  immediately.
+                </p>
+              </div>
+
+              <div
+                id="mode-panel-synthesizer"
+                role="tabpanel"
+                aria-labelledby="mode-tab-synthesizer"
+                aria-hidden={soundMode !== "oscillator"}
+                className={`studio-mode-panel col-start-1 row-start-1 flex flex-wrap items-center gap-2 rounded-xl border border-border bg-muted/40 px-4 py-3 ${
+                  soundMode === "oscillator"
+                    ? "visible translate-y-0 opacity-100 pointer-events-auto"
+                    : "invisible -translate-y-1.5 opacity-0 pointer-events-none"
+                }`}
+              >
                 <span className="mr-1 text-xs font-semibold tracking-wide text-muted-foreground uppercase">
                   Waveform:
                 </span>
-                {(["sine", "triangle", "sawtooth", "square"] as OscillatorType[]).map((wave) => (
-                  <Button
-                    key={wave}
-                    type="button"
-                    variant={waveform === wave ? "default" : "outline"}
-                    size="sm"
-                    onClick={() => setWaveform(wave)}
-                    className="capitalize"
-                  >
-                    {wave}
-                  </Button>
-                ))}
+                {(["sine", "triangle", "sawtooth", "square"] as OscillatorType[]).map((wave) => {
+                  const selected = waveform === wave;
+                  return (
+                    <button
+                      key={wave}
+                      type="button"
+                      tabIndex={soundMode === "oscillator" ? 0 : -1}
+                      aria-pressed={selected}
+                      onClick={(e) => {
+                        selectWaveform(wave);
+                        if (e.detail > 0) e.currentTarget.blur();
+                      }}
+                      className={`inline-flex h-8.5 items-center justify-center rounded-lg border px-3 text-xs font-semibold capitalize transition-all duration-200 cursor-pointer outline-none focus-visible:ring-2 focus-visible:ring-ring active:scale-[0.98] sm:text-sm ${
+                        selected
+                          ? "border-transparent bg-gradient-to-r from-[#dc2626] via-[#ea580c] to-[#f97316] text-white shadow-[0_4px_14px_-3px_rgba(234,88,12,0.5)]"
+                          : "border-border bg-card text-foreground hover:border-primary/50 hover:bg-accent hover:text-accent-foreground"
+                      }`}
+                    >
+                      {wave}
+                    </button>
+                  );
+                })}
               </div>
-            ) : (
-              <div className="rounded-xl border border-orange-500/25 bg-gradient-to-r from-[#dc2626]/[0.06] via-[#ea580c]/[0.06] to-[#f97316]/[0.06] px-4 py-3 text-xs leading-relaxed text-muted-foreground sm:text-sm">
-                <strong className="font-semibold text-foreground">Multi-Harmonic Piano:</strong>{" "}
-                Synthesizes 5 harmonic partials with hammer strike transient, dynamic low-pass
-                filtering, and real-time stereo concert reverb. Press any key to start playing
-                immediately.
-              </div>
-            )}
+            </div>
           </CardContent>
         </Card>
 
@@ -870,6 +1249,33 @@ const MidiController: React.FC = () => {
             />
           </CardContent>
         </Card>
+
+        {/* Local .WAV Audio Recorder & 30-Minute IndexedDB Manager */}
+        <section id="local-audio-recorder" aria-label="Local audio recorder" className="scroll-mt-20">
+          <RecordingPanel
+            recordingEnabled={recordingEnabled}
+            hasCapturedAudio={hasCapturedAudio}
+            elapsedSeconds={recordingElapsed}
+            recordings={recordings}
+            storageSupported={storageSupported}
+            statusMessage={recordingStatus}
+            onToggleRecording={() => {
+              void handleToggleRecording();
+            }}
+            onSaveTakeNow={() => {
+              void handleSaveTakeNow();
+            }}
+            onDeleteRecording={(id) => {
+              void handleDeleteRecording(id);
+            }}
+            onClearAll={() => {
+              void handleClearAllRecordings();
+            }}
+            onRecordingsExpired={() => {
+              void refreshValidRecordings(true);
+            }}
+          />
+        </section>
 
         {/* Keyboard Shortcut Reference */}
         <Card className="border-border/90 bg-card shadow-sm">

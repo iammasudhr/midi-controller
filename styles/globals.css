@@ -275,3 +275,54 @@
   background: linear-gradient(90deg, #dc2626, #f97316);
   border-radius: 9999px;
 }
+
+/* =========================================================
+   Subtle Studio UI Transition Micro-Animations
+   ========================================================= */
+@keyframes studio-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes studio-badge-swap {
+  from {
+    opacity: 0.45;
+    transform: translateY(2px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.studio-panel-in {
+  animation: studio-panel-in 220ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.studio-badge-swap {
+  animation: studio-badge-swap 200ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.studio-mode-panel {
+  transition:
+    opacity 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    visibility 220ms linear;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .studio-panel-in,
+  .studio-badge-swap {
+    animation: none;
+  }
+
+  .studio-mode-panel {
+    transition: none;
+  }
+}

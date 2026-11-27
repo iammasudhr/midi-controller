@@ -10,15 +10,15 @@ const buttonVariants = cva(
     variants: {
       variant: {
         default:
-          "bg-gradient-to-r from-[#dc2626] via-[#ea580c] to-[#f97316] text-white shadow-[0_6px_20px_-4px_rgba(234,88,12,0.45)] hover:brightness-110 hover:shadow-[0_8px_24px_-4px_rgba(220,38,38,0.55)]",
+          "border border-transparent bg-gradient-to-r from-[#dc2626] via-[#ea580c] to-[#f97316] text-white shadow-[0_6px_20px_-4px_rgba(234,88,12,0.45)] hover:brightness-110 hover:shadow-[0_8px_24px_-4px_rgba(220,38,38,0.55)]",
         destructive:
-          "bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90",
+          "border border-transparent bg-destructive text-destructive-foreground shadow-sm hover:bg-destructive/90",
         outline:
           "border border-border bg-card text-foreground hover:border-primary/50 hover:bg-accent hover:text-accent-foreground",
         secondary:
-          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+          "border border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
         ghost:
-          "text-foreground hover:bg-accent hover:text-accent-foreground",
+          "border border-transparent text-foreground hover:bg-accent hover:text-accent-foreground",
         link: "text-primary underline-offset-4 hover:underline",
       },
       size: {
