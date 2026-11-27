@@ -1,0 +1,277 @@
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --font-size: 16px;
+  --background: #faf7f5;
+  --foreground: #181412;
+  --card: #ffffff;
+  --card-foreground: #181412;
+  --popover: #ffffff;
+  --popover-foreground: #181412;
+  --primary: #ea580c;
+  --primary-foreground: #ffffff;
+  --secondary: #fff1eb;
+  --secondary-foreground: #9a3412;
+  --muted: #f4ece7;
+  --muted-foreground: #6b5e57;
+  --accent: #ffedd5;
+  --accent-foreground: #9a3412;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #e9ddd6;
+  --input: #f5ede8;
+  --ring: #ea580c;
+  --radius: 0.75rem;
+  --brand-red: #dc2626;
+  --brand-orange: #ea580c;
+  --brand-amber: #f97316;
+}
+
+.dark {
+  --background: #110f0e;
+  --foreground: #faf6f3;
+  --card: #1b1715;
+  --card-foreground: #faf6f3;
+  --popover: #1b1715;
+  --popover-foreground: #faf6f3;
+  --primary: #f97316;
+  --primary-foreground: #ffffff;
+  --secondary: #2a1d17;
+  --secondary-foreground: #fed7aa;
+  --muted: #241e1b;
+  --muted-foreground: #a89b93;
+  --accent: #2e2019;
+  --accent-foreground: #fdba74;
+  --destructive: #ef4444;
+  --destructive-foreground: #ffffff;
+  --border: rgba(255, 232, 220, 0.11);
+  --input: #231d1a;
+  --ring: #f97316;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  html {
+    font-size: var(--font-size);
+    scroll-behavior: smooth;
+    font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  body {
+    @apply bg-background text-foreground transition-colors duration-300;
+  }
+}
+
+::selection {
+  background-color: #ea580c;
+  color: #ffffff;
+}
+
+/* =========================================================
+   3D Tactile Piano Chassis & Keys
+   ========================================================= */
+.piano-chassis {
+  position: relative;
+  border-radius: 1rem;
+  background: linear-gradient(180deg, #2b221e 0%, #1a1513 100%);
+  padding: 14px 12px 16px;
+  overscroll-behavior: contain;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -3px 8px rgba(0, 0, 0, 0.55),
+    0 20px 44px -14px rgba(24, 14, 10, 0.42);
+}
+
+.dark .piano-chassis {
+  background: linear-gradient(180deg, #241d1a 0%, #110d0c 100%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 232, 220, 0.12),
+    inset 0 -3px 8px rgba(0, 0, 0, 0.8),
+    0 24px 50px -14px rgba(0, 0, 0, 0.85);
+}
+
+/* Authentic crimson felt rail above keys */
+.piano-felt-strip {
+  height: 7px;
+  border-radius: 4px 4px 0 0;
+  background: linear-gradient(90deg, #7f1d1d 0%, #dc2626 35%, #ea580c 65%, #7f1d1d 100%);
+  box-shadow:
+    inset 0 -2px 3px rgba(0, 0, 0, 0.5),
+    0 2px 6px rgba(220, 38, 38, 0.35);
+}
+
+/* 3D White Key */
+.piano-key-white {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: 12px;
+  border-radius: 0 0 9px 9px;
+  border: 1px solid #d6ccc5;
+  border-top: none;
+  background: linear-gradient(180deg, #f3efec 0%, #ffffff 14%, #ffffff 82%, #efe8e2 100%);
+  box-shadow:
+    inset 0 2px 3px rgba(0, 0, 0, 0.1),
+    inset 0 -10px 0 #d8cfc7,
+    inset 0 -11px 0 rgba(255, 255, 255, 0.85),
+    0 5px 8px rgba(0, 0, 0, 0.22);
+  transform: translateY(0) perspective(500px) rotateX(0deg);
+  transform-origin: top center;
+  transition:
+    transform 65ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 65ms cubic-bezier(0.22, 1, 0.36, 1),
+    background 90ms ease,
+    border-color 90ms ease;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+
+.piano-key-white:hover:not([data-pressed="true"]) {
+  background: linear-gradient(180deg, #fff5ef 0%, #ffffff 16%, #fffaf7 84%, #f7e6dc 100%);
+  box-shadow:
+    inset 0 2px 3px rgba(234, 88, 12, 0.12),
+    inset 0 -10px 0 #e6cdc0,
+    inset 0 -11px 0 rgba(255, 255, 255, 0.9),
+    0 5px 10px rgba(234, 88, 12, 0.16);
+}
+
+.piano-key-white[data-pressed="true"] {
+  background: linear-gradient(180deg, #fed7aa 0%, #fff1e6 22%, #ffedd5 82%, #fb923c 100%);
+  border-color: #ea580c;
+  transform: translateY(5px) perspective(500px) rotateX(-2.2deg);
+  box-shadow:
+    inset 0 4px 10px rgba(220, 38, 38, 0.24),
+    inset 0 -3px 0 #c2410c,
+    0 1px 2px rgba(0, 0, 0, 0.28),
+    0 0 18px rgba(234, 88, 12, 0.38);
+}
+
+/* 3D Black Key */
+.piano-key-black {
+  position: absolute;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  padding-bottom: 12px;
+  border-radius: 0 0 7px 7px;
+  border: 1px solid #0e0b0a;
+  border-top: none;
+  background: linear-gradient(180deg, #3b332f 0%, #1d1816 14%, #141110 78%, #0a0807 100%);
+  box-shadow:
+    inset 1px 0 0 rgba(255, 255, 255, 0.18),
+    inset -1px 0 0 rgba(255, 255, 255, 0.08),
+    inset 0 -10px 0 #070505,
+    inset 0 -12px 2px rgba(255, 255, 255, 0.14),
+    0 8px 12px rgba(0, 0, 0, 0.55),
+    0 3px 4px rgba(0, 0, 0, 0.45);
+  transform: translateY(0) perspective(450px) rotateX(0deg);
+  transform-origin: top center;
+  transition:
+    transform 60ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 60ms cubic-bezier(0.22, 1, 0.36, 1),
+    background 85ms ease,
+    border-color 85ms ease;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  cursor: pointer;
+}
+
+.piano-key-black::before {
+  content: "";
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  right: 4px;
+  bottom: 14px;
+  border-radius: 2px 2px 4px 4px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.13) 0%, rgba(255, 255, 255, 0.02) 40%, transparent 100%);
+  pointer-events: none;
+}
+
+.piano-key-black:hover:not([data-pressed="true"]) {
+  background: linear-gradient(180deg, #4b3830 0%, #261c18 16%, #181311 80%, #0d0908 100%);
+  border-color: rgba(234, 88, 12, 0.55);
+}
+
+.piano-key-black[data-pressed="true"] {
+  background: linear-gradient(180deg, #dc2626 0%, #b91c1c 18%, #7c2d12 78%, #431407 100%);
+  border-color: #f97316;
+  transform: translateY(4px) perspective(450px) rotateX(-2.5deg);
+  box-shadow:
+    inset 0 3px 7px rgba(0, 0, 0, 0.5),
+    inset 0 -3px 0 #ea580c,
+    0 2px 4px rgba(0, 0, 0, 0.55),
+    0 0 18px rgba(220, 38, 38, 0.55);
+}
+
+/* Custom sleek scrollbar for mobile piano horizontal scroll */
+.piano-scroll {
+  overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior: contain;
+  overscroll-behavior-y: none;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Lock vertical/pinch page scrolling on the interactive piano keybed surface */
+.piano-keybed {
+  touch-action: none;
+  overscroll-behavior: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.piano-scroll::-webkit-scrollbar {
+  height: 7px;
+}
+
+.piano-scroll::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 9999px;
+}
+
+.piano-scroll::-webkit-scrollbar-thumb {
+  background: linear-gradient(90deg, #dc2626, #f97316);
+  border-radius: 9999px;
+}
